@@ -13,7 +13,7 @@ module tb_shifter;
 	);
 	
 	initial begin
-		IN  = 24'b1;
+		IN  = 24'b111111111111100000111111;
 		BY  = 8'b0;
 		CLK = 1'b0;
 	end
