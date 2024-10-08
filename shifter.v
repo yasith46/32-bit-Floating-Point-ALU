@@ -9,22 +9,20 @@ module shifter(
 	
 	// Calculating the absolute
 	
-	cla cla_int_sh0(
-		.A(~BY[3:0]),
-		.B(4'b1),
-		.CIN(1'b1),
-		.COUT(COUT_INT),
+	twos_cla t_shft0(
+		.B(~BY[3:0]), 
+		.CIN(1'b1),   
+		.COUT(COUT_INT), 
 		.S(BY_COMPL[3:0])
 	);
 	
-	cla cla_int_sh1(
-		.A(~BY[7:4]),
-		.B(4'b0),
-		.CIN(COUT_INT),
-		.COUT(),
+	twos_cla t_shft1(
+		.B(~BY[7:4]), 
+		.CIN(COUT_INT),   
+		.COUT(), 
 		.S(BY_COMPL[7:4])
 	);
-	
+		
 	always@(*) begin
 		if (BY[7] == 1'b0) begin	// When BY is > 0
 			OUT = IN >> BY;

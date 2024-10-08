@@ -1,6 +1,6 @@
 module twos_cla(
 		input  [3:0] B,
-		input  CIN,
+		input  CIN, 
 		output COUT,
 		output [3:0] S
 	);
@@ -20,6 +20,6 @@ module twos_cla(
 	assign COUT  = CARRY[3];
 	
 	// Adder
-	assign S = B ^ {CARRY[2:0], CIN};
+	assign S = (B ^ {CARRY[2:0], CIN});
 	
 endmodule 
