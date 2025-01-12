@@ -7,28 +7,28 @@
 
 
 module alu(
-		input  FPUCLK,
+		input  FPUCLK, RST,
 		input  [31:0] A, B,
 		input  [2:0]  CTRL,
 		output reg [31:0] OUT
 	);
 	
 	// codes
-	parameter ADD = 3'b000, SUB = 3'b001, MUL = 3'b010;
+	parameter ADD = 3'b000, SUB = 3'b001, MUL = 3'b010, DIV = 3'b011, NONE = 3'b111;
 	
 	// Pipeline registers
-	reg [23:0] APP0, APP1, BPP0, BPP1, RESM;	// Pipeline registers for number and cmd
-	reg [31:0] OUT0;
-	reg ASIGN0, ASIGN1, BSIGN0, BSIGN1, SIGN, OF0;
-	reg [2:0]  CTRL1, CTRL2, CTRL3;
-	reg [7:0] EXPONENT;
+	reg [23:0] APP0, APP1, BPP0, BPP1, RESM2;	// Pipeline registers for number and cmd
+	reg [31:0] OUT0, SP0, SP1, SP2;
+	reg ASIGN0, ASIGN1, BSIGN0, BSIGN1, SIGN2, OF2, SIGNDIV, SPBIT0, SPBIT1, SPBIT2;
+	reg [2:0]  CTRL0, CTRL1, CTRL2, CTRLDIV;
+	reg [7:0] EXPONENT, AEXP0, BEXP0;
 	
 		
 	// For exponents
 	reg  EXPCIN;				// Add or subtract the exponents
 	wire [7:0] EXPCAL_w_int, EXPCAL_w;		// Result of exponents (for pipeline stage1)
 	wire COUT_EX0, COUT_EX1;
-	reg  [7:0]  EXPCARRY0, EXPCARRY1, ADDNORM;						// Exp of greater to be carried
+	reg  [7:0]  EXPCARRY1, EXPCARRY2, ADDNORM, EXCARRYDIV;						// Exp of greater to be carried
 	reg  EXPZFLAG0, EXPZFLAG1, EXPZFLAG2;
 		
 	cla claexp_00(.A(A[26:23]), .B(B[26:23]^{4{EXPCIN}}), .CIN(EXPCIN),   .COUT(COUT_EX0), .S(EXPCAL_w_int[3:0]));	
@@ -74,10 +74,11 @@ module alu(
 	wire NORMFLAG, NORMZERO;
 	wire [7:0] NORM_SHIFT, NORM_SHAMT;
 	reg  [7:0] NORM_MULSHIFT;
+	reg  NORMCIN;
 	
 	normal normalize0(
-		.IN(RESM),
-		.INOF(OF0),
+		.IN(RESM2),
+		.INOF(OF2),
 		.OUT(NORMOUT),
 		.COUNT(NORM_SHIFT),
 		.ZEROFLAG(NORMZERO)
@@ -87,10 +88,10 @@ module alu(
 	wire COUT_SRES;
 	wire [7:0] EXPSRES;
 	
-	assign NORM_SHAMT = (CTRL3 == MUL) ? NORM_MULSHIFT : NORM_SHIFT;
+	assign NORM_SHAMT = (CTRL2 == MUL | CTRL2 == DIV) ? NORM_MULSHIFT : NORM_SHIFT;
 	
-	cla clasresexp_0(.A(EXPCARRY1[3:0]),	.B(NORM_SHAMT[3:0]), .CIN(1'b0),      .COUT(COUT_SRES), .S(EXPSRES[3:0]));
-	cla clasresexp_1(.A(EXPCARRY1[7:4]),	.B(NORM_SHAMT[7:4]), .CIN(COUT_SRES), .COUT(),          .S(EXPSRES[7:4]));
+	cla clasresexp_0(.A(EXPCARRY2[3:0]),	.B(NORM_SHAMT[3:0]^{4{NORMCIN}}), .CIN(NORMCIN),      .COUT(COUT_SRES), .S(EXPSRES[3:0]));
+	cla clasresexp_1(.A(EXPCARRY2[7:4]),	.B(NORM_SHAMT[7:4]^{4{NORMCIN}}), .CIN(COUT_SRES), .COUT(),          .S(EXPSRES[7:4]));
 	
 	
 	
@@ -158,6 +159,20 @@ module alu(
 				 
 	mul_l5 l5(.W12345678910111213141516(WML4_12345678910111213141516), .W1718192021222324(WML4_1718192021222324), .OUT(WML5_OUT));
 	
+	// Dividers
+	reg DIVREQ;
+	wire [23:0] DIVOUT;
+	wire DIVREADY;
+	
+	divider div1(.A(APP0),	
+					 .B(BPP0),	
+					 .CLK(FPUCLK),
+					 .RST(RST),
+					 .REQ(DIVREQ),
+					 .OUT(DIVOUT),
+					 .READY(DIVREADY)
+					 );
+	
 	// Combinational parts of each stage 
 	
 	always@(*) begin
@@ -167,15 +182,19 @@ module alu(
 		if (CTRL == ADD | CTRL == SUB) begin
 			ADDNORM <= 8'b0;
 			EXPCIN  <= 1'b1;
-		end else begin			// for MUL
-			ADDNORM <= 8'b10000001;
+		end else if (CTRL == MUL) begin			// for MUL
+			ADDNORM <= 8'b10000001;					// add -127
 			EXPCIN  <= 1'b0;
+		end else if (CTRL == DIV) begin
+			ADDNORM <= 8'b01111111;					// add 127
+			EXPCIN  <= 1'b1;
+
 		end
 		
 		// -----------------------------------
 		// Stage 2 : Shifting
 		// -----------------------------------
-		if (CTRL1 == ADD | CTRL1 == SUB) begin			
+		if (CTRL0 == ADD | CTRL0 == SUB) begin			
 			// Deciding which to be shifted					
 			if (EXPCAL0[7] == 1'b0) begin			// exp(A) > exp(B), shift B to right
 				TBSHIFTED <= BPP0;
@@ -190,7 +209,7 @@ module alu(
 		// -----------------------------------
 		// Stage 3 : Operation
 		// -----------------------------------
-		if (CTRL2 == ADD) begin		
+		if (CTRL1 == ADD) begin		
 			if (((ASIGN1 == 1'b0) & (BSIGN1 == 1'b0)) | ((ASIGN1 == 1'b1) & (BSIGN1 == 1'b1))) begin 	// if signs are the same
 				A_ALUIN <= APP1;
 				B_ALUIN <= BPP1;
@@ -208,7 +227,7 @@ module alu(
 				B_ALUIN <= 24'bX;
 				ALUCIN  <= 1'bX;
 			end			
-		end else if (CTRL2 == SUB) begin
+		end else if (CTRL1 == SUB) begin
 			if (((ASIGN1 == 1'b0) & (BSIGN1 == 1'b1)) | ((ASIGN1 == 1'b1) & (BSIGN1 == 1'b0))) begin 	// if signs are different
 				A_ALUIN <= APP1;
 				B_ALUIN <= BPP1;
@@ -235,7 +254,8 @@ module alu(
 		// -----------------------------------
 		// Stage 4 : Sign resolution
 		// -----------------------------------
-		if ((CTRL3 == ADD)|(CTRL3 == SUB)) begin
+		if ((CTRL2 == ADD)|(CTRL2 == SUB)) begin
+			NORMCIN <= 1'b0;
 			if ((EXPZFLAG2 == 1'b1) & (NORMZERO == 1'b1)) begin
 				NORM_MULSHIFT <= 7'bx;
 				EXPONENT <= 8'b0;
@@ -243,177 +263,342 @@ module alu(
 				NORM_MULSHIFT <= 7'bx;
 				EXPONENT <= EXPSRES;
 			end
-		end else if (CTRL3 == MUL) begin
+		end else if (CTRL2 == MUL) begin
+			NORMCIN <= 1'b0;
 			if (WML5_OUT[24] == 1'b0) begin
 				// exponent is exponent
 				NORM_MULSHIFT <= 7'bx;
-				EXPONENT <= EXPCARRY1;
+				EXPONENT <= EXPCARRY2;
 			end else begin
 				// add 1 to exponent
 				NORM_MULSHIFT <= 7'b1;
 				EXPONENT <= EXPSRES;
 			end
+		end else if (CTRL2 == DIV) begin
+			NORMCIN <= 1'b1;
+			if (DIVOUT[23] == 1'b1) begin
+				NORM_MULSHIFT <= 7'bx;
+				EXPONENT <= EXPCARRY2;
+			end else begin
+				NORM_MULSHIFT <= 7'b1;
+				EXPONENT <= EXPSRES;
+			end
 		end else begin
+			NORMCIN <= 1'bx;
 			NORM_MULSHIFT <= 7'bx;
 			EXPONENT <= EXPSRES;			// TO BE CHANGED!!!
 		end
 	end
 	
-	
 	// Let ADD be 3'b000
-	always@(posedge FPUCLK) begin		
-		// -----------------------------------
-		// Stage 1 : Exponent calculation
-		// -----------------------------------
-		
-		if (CTRL == ADD | CTRL == SUB | CTRL == MUL) begin
-			APP0    <= {1'b1,A[22:0]};
-			BPP0    <= {1'b1,B[22:0]};
-			ASIGN0  <= A[31];
-			BSIGN0  <= B[31];
-		
-			EXPCAL0 <= EXPCAL_w;
-			CTRL1	  <= CTRL;
-		end
-		
-		if (EXPCAL_w == 8'b0) begin
-			EXPZFLAG0 <= 1'b1;
-		end else begin
+	always@(posedge FPUCLK or negedge RST) begin	
+		if (~RST) begin
+			APP0    <= 24'b0;
+			BPP0    <= 24'b0;
+			ASIGN0  <= 1'b0;
+			BSIGN0  <= 1'b0;
+			AEXP0	  <= 8'b0;
+			BEXP0	  <= 8'b0;
+			EXPCAL0 <= 8'b0;
+			CTRL0	  <= 3'b0;
 			EXPZFLAG0 <= 1'b0;
-		end
+			DIVREQ <= 1'b0;
+			EXPZFLAG1 <= 1'b0;
+			CTRL1  <= 3'b0;					
+			ASIGN1 <= 1'b0;
+			BSIGN1 <= 1'b0;
+			APP1      <= 24'b0;
+			BPP1      <= 24'b0;
+			EXPCARRY1 <= 8'b0; 	
+			RML1_12   <= 3'b0;
+			RML1_34   <= 5'b0;
+			RML1_56   <= 7'b0;
+			RML1_78   <= 9'b0;
+			RML1_910  <= 11'b0;
+			RML1_1112 <= 13'b0;
+			RML1_1314 <= 15'b0;
+			RML1_1516 <= 17'b0;
+			RML1_1718 <= 19'b0;
+			RML1_1920 <= 21'b0;
+			RML1_2122 <= 23'b0;
+			RML1_2324 <= 25'b0;
+			CTRLDIV <= 3'b0;
+			SIGNDIV <= 1'b0;
+			EXCARRYDIV <= 8'b0;
+			DIVREQ <= 1'b0;
+			EXPZFLAG2 <= 1'b0;
+			CTRL2 <= 3'b0;
+			RESM2 <= 24'b0;
+			OF2  <= 1'b0;
+			EXPCARRY2 <= 3'b0;
+			SIGN2 <= 1'b0;
+			RML3_12345678         <= 11'b0;
+			RML3_910111213141516  <= 19'b0;
+			RML3_1718192021222324 <= 25'b0;
+			OUT <= 23'b0;
+			SPBIT0 <= 1'b0;
+			SP0 <= 31'b0;
+			SPBIT1 <= 1'b0;
+			SP1 <= 31'b0;
+			SPBIT2 <= 1'b0;
+			SP2 <= 31'b0;
 		
 		
-		// -----------------------------------
-		// Stage 2 : Shifting
-		// -----------------------------------
-		if (CTRL1 == ADD | CTRL1 == SUB) begin
-			EXPZFLAG1 <= EXPZFLAG0;
-			CTRL2  <= CTRL1;					
-			ASIGN1 <= ASIGN0;
-			BSIGN1 <= BSIGN0;
+		end else begin
 			
-			// Deciding which to be shifted					
-			if (EXPCAL0[7] == 1'b0) begin			// exp(A) > exp(B), shift B to right
-				APP1      <= APP0;
-				BPP1      <= SHIFTOUT_w;
-				EXPCARRY0  <= A[30:23]; 
-			end else begin									// exp(B) > exp(A), shift A to right
-				APP1  	 <= SHIFTOUT_w;
-				BPP1      <= BPP0;
-				EXPCARRY0  <= B[30:23];					
-			end
-		end else if (CTRL1 == MUL) begin
-			CTRL2  <= CTRL1;
-			ASIGN1 <= ASIGN0;
-			BSIGN1 <= BSIGN0;
-			EXPCARRY0 <= EXPCAL0;
 			
-			RML1_12   <= WML1_12;
-			RML1_34   <= WML1_34;
-			RML1_56   <= WML1_56;
-			RML1_78   <= WML1_78;
-			RML1_910  <= WML1_910;
-			RML1_1112 <= WML1_1112;
-			RML1_1314 <= WML1_1314;
-			RML1_1516 <= WML1_1516;
-			RML1_1718 <= WML1_1718;
-			RML1_1920 <= WML1_1920;
-			RML1_2122 <= WML1_2122;
-			RML1_2324 <= WML1_2324;
-		end
-		
-		
-		// -----------------------------------
-		// Stage 3 : Operation
-		// -----------------------------------
-		if (CTRL2 == ADD) begin
-			EXPZFLAG2 <= EXPZFLAG1;
-			CTRL3 <= CTRL2;
-		
-			if (((ASIGN1 == 1'b0) & (BSIGN1 == 1'b0)) | ((ASIGN1 == 1'b1) & (BSIGN1 == 1'b1))) begin 	// if signs are the same
-				RESM <= ALUOUT;
-				OF0  <= OVERFLOW;
-				EXPCARRY1 <= EXPCARRY0;
-				SIGN <= ASIGN1;
-				
-			end else if ((ASIGN1 == 1'b0) & (BSIGN1 == 1'b1)) begin
-				
-				if (OVERFLOW == 1'b0) begin
-					RESM <= TWOSOUT;
-				end else begin
-					RESM <= ALUOUT;
-				end
-				
-				OF0 <= 1'b0;
-				EXPCARRY1 <= EXPCARRY0;
-				SIGN <= ~OVERFLOW;
-				
-			end else if ((ASIGN1 == 1'b1) & (BSIGN1 == 1'b0)) begin
-				
-				if (OVERFLOW == 1'b0) begin
-					RESM <= TWOSOUT;
-				end else begin
-					RESM <= ALUOUT;
-				end
-				
-				OF0 <= 1'b0;
-				EXPCARRY1 <= EXPCARRY0;
-				SIGN <= ~OVERFLOW;
+			// -----------------------------------
+			// Stage 1 : Exponent calculation
+			// -----------------------------------
+			
+			if (CTRL == ADD | CTRL == SUB | CTRL == MUL | CTRL == DIV) begin
+				APP0    <= {1'b1,A[22:0]};
+				BPP0    <= {1'b1,B[22:0]};
+				ASIGN0  <= A[31];
+				BSIGN0  <= B[31];
+				AEXP0	  <= A[30:23];
+				BEXP0	  <= B[30:23];
+			
+				EXPCAL0 <= EXPCAL_w;
+				CTRL0	  <= CTRL;
 			end
 			
-		end else if (CTRL2 == SUB) begin
-			CTRL3 <= CTRL2;
-			EXPZFLAG2 <= EXPZFLAG1;
-			
-			if (((ASIGN1 == 1'b0) & (BSIGN1 == 1'b1)) | ((ASIGN1 == 1'b1) & (BSIGN1 == 1'b0))) begin 	// if signs are different
-				RESM <= ALUOUT;
-				OF0 <= OVERFLOW;
-				EXPCARRY1 <= EXPCARRY0;
-				SIGN <= ASIGN1;
-				
-			end else if ((ASIGN1 == 1'b0) & (BSIGN1 == 1'b0)) begin
-				if (OVERFLOW == 1'b0) begin
-					RESM <= TWOSOUT;
-				end else begin
-					RESM <= ALUOUT;
-				end
-				
-				OF0 <= 1'b0;
-				EXPCARRY1 <= EXPCARRY0;
-				SIGN <= ~OVERFLOW;
-				
-			end else if ((ASIGN1 == 1'b1) & (BSIGN1 == 1'b0)) begin
-				if (OVERFLOW == 1'b0) begin
-					RESM <= TWOSOUT;
-				end else begin
-					RESM <= ALUOUT;
-				end
-				
-				OF0 <= 1'b0;
-				EXPCARRY1 <= EXPCARRY0;
-				SIGN <= ~OVERFLOW;
-			end
-		end else if (CTRL == MUL) begin
-			CTRL3 <= CTRL2;
-			EXPCARRY1 <= EXPCARRY0;
-			SIGN <= ASIGN1 ^ BSIGN1;
-			
-			RML3_12345678         <= WML3_12345678;
-			RML3_910111213141516  <= WML3_910111213141516;
-			RML3_1718192021222324 <= WML3_1718192021222324;
-		end
-		
-		
-		// -----------------------------------
-		// Stage 4 : Sign resolution
-		// -----------------------------------
-		if ((CTRL3 == ADD)|(CTRL3 == SUB)) begin
-			OUT <= {SIGN, EXPONENT, NORMOUT};
-		end else if (CTRL == MUL) begin
-			if (WML5_OUT[24] == 1'b0) begin
-				OUT <= {SIGN, EXPONENT, WML5_OUT[22:0]};
+			if (EXPCAL_w == 8'b0) begin
+				EXPZFLAG0 <= 1'b1;
 			end else begin
-				OUT <= {SIGN, EXPONENT, WML5_OUT[23:1]};
+				EXPZFLAG0 <= 1'b0;
+			end
+			
+			if (CTRL == DIV & CTRLDIV != DIV)
+				DIVREQ <= 1'b1;
+				
+				
+			// Special case calculation
+			if (CTRL == ADD) begin
+				if (A[30:23] == 8'b11111111) begin
+					SPBIT0 <= 1'b1;
+					SP0 <= {A[31],3'b111,28'hf800000};	// inf
+				end else if (B[30:23] == 8'b11111111) begin
+					SPBIT0 <= 1'b1;
+					SP0 <= {B[31],3'b111,28'hf800000};	// inf
+				end else if (A == 32'b0) begin
+					SPBIT0 <= 1'b1;
+					SP0 <= B;
+				end else if (B == 32'b0) begin
+					SPBIT0 <= 1'b1;
+					SP0 <= A;
+				end else begin
+					SPBIT0 <= 1'b0;
+					SP0 <= 32'bx;
+				end
+				
+			end else if (CTRL == SUB) begin
+				if (A[30:23] == 8'b11111111) begin
+					SPBIT0 <= 1'b1;
+					SP0 <= {A[31],3'b111,28'hf800000};	// inf
+				end else if (B[30:23] == 8'b11111111) begin
+					SPBIT0 <= 1'b1;
+					SP0 <= {B[31],3'b111,28'hf800000};	// inf
+				end else if (A == 32'b0) begin
+					SPBIT0 <= 1'b1;
+					SP0 <= {1'b1,B[30:0]};
+				end else if (B == 32'b0) begin
+					SPBIT0 <= 1'b1;
+					SP0 <= A;
+				end else begin
+					SPBIT0 <= 1'b0;
+					SP0 <= 32'bx;
+				end
+				
+			end else if (CTRL == MUL) begin
+				if (A[30:23] == 8'b11111111 | B[30:23] == 8'b11111111) begin
+					SPBIT0 <= 1'b1;
+					SP0 <= {A[31]^B[31],3'b111,28'hf800000};	// inf
+				end else if (A == 32'b0 | B == 32'b0) begin
+					SPBIT0 <= 1'b1;
+					SP0 <= 32'b0;	
+				end else begin
+					SPBIT0 <= 1'b0;
+					SP0 <= 32'bx;
+				end
+				
+			end else if (CTRL == DIV) begin
+				if (A[30:23] == 8'b11111111 | B[30:23] == 8'b11111111 | B == 32'b0) begin
+					SPBIT0 <= 1'b1;
+					SP0 <= {A[31]^B[31],3'b111,28'hf800000};	// inf
+				end else begin
+					SPBIT0 <= 1'b0;
+					SP0 <= 32'bx;
+				end
+			end else begin
+				SPBIT0 <= 1'b0;
+				SP0 <= 32'bx;
+			end
+			
+			
+			
+			
+			
+			// -----------------------------------
+			// Stage 2 : Shifting
+			// -----------------------------------
+			if (CTRL0 == ADD | CTRL0 == SUB) begin
+				EXPZFLAG1 <= EXPZFLAG0;
+				CTRL1  <= CTRL0;					
+				ASIGN1 <= ASIGN0;
+				BSIGN1 <= BSIGN0;
+				
+				// Deciding which to be shifted					
+				if (EXPCAL0[7] == 1'b0) begin			// exp(A) > exp(B), shift B to right
+					APP1      <= APP0;
+					BPP1      <= SHIFTOUT_w;
+					EXPCARRY1  <= AEXP0; 
+				end else begin									// exp(B) > exp(A), shift A to right
+					APP1  	 <= SHIFTOUT_w;
+					BPP1      <= BPP0;
+					EXPCARRY1  <= BEXP0;					
+				end
+			end else if (CTRL0 == MUL) begin
+				CTRL1  <= CTRL0;
+				ASIGN1 <= ASIGN0;
+				BSIGN1 <= BSIGN0;
+				EXPCARRY1 <= EXPCAL0;
+				
+				RML1_12   <= WML1_12;
+				RML1_34   <= WML1_34;
+				RML1_56   <= WML1_56;
+				RML1_78   <= WML1_78;
+				RML1_910  <= WML1_910;
+				RML1_1112 <= WML1_1112;
+				RML1_1314 <= WML1_1314;
+				RML1_1516 <= WML1_1516;
+				RML1_1718 <= WML1_1718;
+				RML1_1920 <= WML1_1920;
+				RML1_2122 <= WML1_2122;
+				RML1_2324 <= WML1_2324;
+			end else if (CTRL0 == DIV) begin
+				CTRLDIV <= DIV;
+				SIGNDIV <= ASIGN0 ^ BSIGN0;
+				EXCARRYDIV <= EXPCAL0;
+			end
+			
+			if (CTRLDIV == DIV) DIVREQ <= 1'b0;
+			
+			SPBIT1 <= SPBIT0;
+			SP1 <= SP0;
+			
+			
+			// -----------------------------------
+			// Stage 3 : Operation
+			// -----------------------------------
+			if (CTRL1 == ADD) begin
+				EXPZFLAG2 <= EXPZFLAG1;
+				CTRL2 <= CTRL1;
+			
+				if (((ASIGN1 == 1'b0) & (BSIGN1 == 1'b0)) | ((ASIGN1 == 1'b1) & (BSIGN1 == 1'b1))) begin 	// if signs are the same
+					RESM2 <= ALUOUT;
+					OF2  <= OVERFLOW;
+					EXPCARRY2 <= EXPCARRY1;
+					SIGN2 <= ASIGN1;
+					
+				end else if ((ASIGN1 == 1'b0) & (BSIGN1 == 1'b1)) begin
+					
+					if (OVERFLOW == 1'b0) begin
+						RESM2 <= TWOSOUT;
+					end else begin
+						RESM2 <= ALUOUT;
+					end
+					
+					OF2 <= 1'b0;
+					EXPCARRY2 <= EXPCARRY1;
+					SIGN2 <= ~OVERFLOW;
+					
+				end else if ((ASIGN1 == 1'b1) & (BSIGN1 == 1'b0)) begin
+					
+					if (OVERFLOW == 1'b0) begin
+						RESM2 <= TWOSOUT;
+					end else begin
+						RESM2 <= ALUOUT;
+					end
+					
+					OF2 <= 1'b0;
+					EXPCARRY2 <= EXPCARRY1;
+					SIGN2 <= ~OVERFLOW;
+				end
+				
+			end else if (CTRL1 == SUB) begin
+				CTRL2 <= CTRL1;
+				EXPZFLAG2 <= EXPZFLAG1;
+				
+				if (((ASIGN1 == 1'b0) & (BSIGN1 == 1'b1)) | ((ASIGN1 == 1'b1) & (BSIGN1 == 1'b0))) begin 	// if signs are different
+					RESM2 <= ALUOUT;
+					OF2 <= OVERFLOW;
+					EXPCARRY2 <= EXPCARRY1;
+					SIGN2 <= ASIGN1;
+					
+				end else if ((ASIGN1 == 1'b0) & (BSIGN1 == 1'b0)) begin
+					if (OVERFLOW == 1'b0) begin
+						RESM2 <= TWOSOUT;
+					end else begin
+						RESM2 <= ALUOUT;
+					end
+					
+					OF2 <= 1'b0;
+					EXPCARRY2 <= EXPCARRY1;
+					SIGN2 <= ~OVERFLOW;
+					
+				end else if ((ASIGN1 == 1'b1) & (BSIGN1 == 1'b0)) begin
+					if (OVERFLOW == 1'b0) begin
+						RESM2 <= TWOSOUT;
+					end else begin
+						RESM2 <= ALUOUT;
+					end
+					
+					OF2 <= 1'b0;
+					EXPCARRY2 <= EXPCARRY1;
+					SIGN2 <= ~OVERFLOW;
+				end
+			end else if (CTRL1 == MUL) begin
+				CTRL2 <= CTRL1;
+				EXPCARRY2 <= EXPCARRY1;
+				SIGN2 <= ASIGN1 ^ BSIGN1;
+				
+				RML3_12345678         <= WML3_12345678;
+				RML3_910111213141516  <= WML3_910111213141516;
+				RML3_1718192021222324 <= WML3_1718192021222324;
+			end
+			
+			if (DIVREADY & (CTRLDIV == DIV)) begin 
+				CTRL2   <= CTRLDIV;
+				EXPCARRY2 <= EXCARRYDIV;
+				SIGN2   <= SIGNDIV;
+			end
+			
+			SP2 <= SP1;
+			SPBIT2 <= SPBIT1;
+			
+			// -----------------------------------
+			// Stage 4 : Sign resolution
+			// -----------------------------------
+			if (SPBIT2) begin
+				OUT <= SP2;
+				SPBIT2 <= 1'b0;
+			end else begin
+				if ((CTRL2 == ADD)|(CTRL2 == SUB)) begin
+					OUT <= {SIGN2, EXPONENT, NORMOUT};
+				end else if (CTRL2 == MUL) begin
+					if (WML5_OUT[24] == 1'b0) begin
+						OUT <= {SIGN2, EXPONENT, WML5_OUT[22:0]};
+					end else begin
+						OUT <= {SIGN2, EXPONENT, WML5_OUT[23:1]};
+					end
+				end else if (CTRL2 == DIV) begin
+					if (DIVOUT[23] == 1'b1) begin
+						OUT <= {SIGN2, EXPONENT, DIVOUT[22:0]};
+					end else begin
+						OUT <= {SIGN2, EXPONENT, DIVOUT[21:0], 1'b0};
+					end
+				end
 			end
 		end
 	end
