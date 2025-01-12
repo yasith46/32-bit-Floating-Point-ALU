@@ -5,3 +5,4 @@ A 32-bit ALU for operations on IEEE-754 Single Precision floating points. This p
 - Divider: Requires 25 cycles
 
 Top-level entity: alu.v
+![Artboard 1@4x](https://github.com/user-attachments/assets/c1448b30-1202-4e8d-bf7e-1c516b37583c)
