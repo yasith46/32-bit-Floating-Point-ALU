@@ -7,4 +7,4 @@ A 32-bit ALU for operations on IEEE-754 Single Precision floating points. This p
 The design has been implemented in 4 pipelines. However, for division, the exponent results are stored in a "bench" stage until the completion of the operations on the mantissa. As different operations require different clock cycles, a reordering method is required externally to manage the operations. Error prevention for errors regarding collision of operation completions has not yet been implemented. 
 
 Top-level entity: alu.v
-![Artboard 1@4x](https://github.com/user-attachments/assets/c1448b30-1202-4e8d-bf7e-1c516b37583c)
+![Artboard 1@4x](https://github.com/user-attachments/assets/c1aeaa73-86f8-45b7-ac42-08dffc9eff2e)
